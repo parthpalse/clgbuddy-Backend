@@ -4,6 +4,7 @@ import {
   ScrollView, ActivityIndicator, Alert, SafeAreaView, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Location from 'expo-location';
 import { API_URL } from './config';
 
 // ─── Storage keys ────────────────────────────────────────────────────────────
@@ -57,6 +58,36 @@ function SetupScreen({ onSave }) {
   const [walkMins, setWalkMins] = useState('5');
   const [arrival, setArrival] = useState('09:00');
   const [saving, setSaving] = useState(false);
+  const [locLoading, setLocLoading] = useState(false);
+
+  const requestLocation = async () => {
+    setLocLoading(true);
+    try {
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Denied', 'Location permission is needed to auto-fill your home address.');
+        return;
+      }
+
+      let loc = await Location.getCurrentPositionAsync({});
+      let { latitude, longitude } = loc.coords;
+
+      let resp = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`, {
+        headers: { 'User-Agent': 'ClgBuddyApp/1.0' }
+      });
+      let data = await resp.json();
+
+      if (data && data.display_name) {
+        setHome(data.display_name);
+      } else {
+        Alert.alert('Error', 'Could not find address for your location.');
+      }
+    } catch (e) {
+      Alert.alert('Error', 'Failed to get location: ' + e.message);
+    } finally {
+      setLocLoading(false);
+    }
+  };
 
   const save = async () => {
     if (!home.trim() || !station.trim() || !arrival.trim()) {
@@ -81,8 +112,13 @@ function SetupScreen({ onSave }) {
 
         <View style={styles.card}>
           <Text style={styles.label}>🏠 Home Address</Text>
-          <TextInput style={styles.input} value={home} onChangeText={setHome}
-            placeholder="e.g. Thane West, near Upvan Lake" />
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <TextInput style={[styles.input, { flex: 1, marginBottom: 0 }]} value={home} onChangeText={setHome}
+              placeholder="e.g. Thane West, near Upvan Lake" />
+            <TouchableOpacity style={styles.locButton} onPress={requestLocation} disabled={locLoading}>
+              {locLoading ? <ActivityIndicator color="#007AFF" /> : <Text style={styles.locButtonText}>📍 Use My Location</Text>}
+            </TouchableOpacity>
+          </View>
 
           <Text style={styles.label}>🚉 Nearest Railway Station</Text>
           <TextInput style={styles.input} value={station} onChangeText={setStation}
@@ -395,4 +431,6 @@ const styles = StyleSheet.create({
   logButton: { backgroundColor: '#34C759', borderRadius: 10, paddingHorizontal: 18, paddingVertical: 13 },
   logButtonText: { color: '#fff', fontWeight: '700', fontSize: 15 },
   delayHistory: { fontSize: 12, color: '#888', marginTop: 8, textAlign: 'center' },
+  locButton: { marginLeft: 8, padding: 12, backgroundColor: '#E8ECF0', borderRadius: 10 },
+  locButtonText: { color: '#007AFF', fontWeight: '600', fontSize: 14 },
 });

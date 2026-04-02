@@ -41,11 +41,11 @@ class MLService:
             n_estimators=50, random_state=42
         )
         self.trained = False
-        # Mock historical data: [Hour, Minute, DayOfWeek] -> Duration(mins)
+        # Mock historical data: [Hour, Minute, DayOfWeek, HistAvgDelay] -> Duration(mins)
         self.mock_data = [
-            [8, 0, 0, 55], [8, 30, 0, 60], [9, 0, 0, 65],   # Mon morning
-            [18, 0, 0, 70], [18, 30, 0, 75],                  # Mon evening
-            [8, 0, 1, 50], [9, 0, 1, 62],                     # Tue morning
+            [8, 0, 0, 5, 55], [8, 30, 0, 10, 60], [9, 0, 0, 15, 65],   # Mon morning
+            [18, 0, 0, 20, 70], [18, 30, 0, 25, 75],                  # Mon evening
+            [8, 0, 1, 5, 50], [9, 0, 1, 15, 62],                     # Tue morning
             # ... more data would be loaded from Firebase Firestore in real app
         ]
 
@@ -83,9 +83,9 @@ class MLService:
         try:
             df = pd.DataFrame(
                 self.mock_data,
-                columns=['hour', 'minute', 'day_of_week', 'duration']
+                columns=['hour', 'minute', 'day_of_week', 'historical_avg_delay_for_that_day', 'duration']
             )
-            X = df[['hour', 'minute', 'day_of_week']]
+            X = df[['hour', 'minute', 'day_of_week', 'historical_avg_delay_for_that_day']]
             y = df['duration']
 
             self.model.fit(X, y)
@@ -106,45 +106,33 @@ class MLService:
             logger.error("Error training ML model: %s", e)
 
     # ------------------------------------------------------------------
-    def predict_commute_time(self, hour, minute, day_of_week):
+    def predict_commute_time(self, hour, minute, day_of_week, historical_avg_delay_for_that_day=0.0):
         """Predicts commute time based on time and day."""
         if not self.trained:
-            return None
+            # If no data yet, return a prediction of 0 (no delay expected)
+            return 0.0
 
         try:
-            prediction = self.model.predict([[hour, minute, day_of_week]])
+            prediction = self.model.predict([[hour, minute, day_of_week, historical_avg_delay_for_that_day]])
             return round(float(prediction[0]), 2)
         except Exception as e:
             logger.error("Prediction error: %s", e)
-            return None
+            return 0.0
 
     # ------------------------------------------------------------------
-    def learn_from_trip(self, departure_time, day_of_week, actual_duration):
-        """Updates the model with new trip data (incremental retraining)."""
-        # FIX: Validate departure_time format before parsing.
-        # WHY: A malformed string (e.g. "8am" instead of "08:00") crashes
-        #      strptime and takes down the entire /api/learn endpoint.
-        try:
-            dt = datetime.strptime(departure_time, '%H:%M')
-        except (ValueError, TypeError) as e:
-            logger.warning("Invalid departure_time '%s': %s", departure_time, e)
-            return
-
-        # FIX: Clamp actual_duration to [MIN, MAX] range.
-        # WHY: A single corrupt value (e.g. -30 or 9999) can permanently
-        #      skew predictions. Clamping keeps the training set sane.
-        if not isinstance(actual_duration, (int, float)):
-            logger.warning("Invalid actual_duration type: %s", type(actual_duration))
-            return
-        actual_duration = max(MIN_DURATION_MINS, min(MAX_DURATION_MINS, actual_duration))
-
-        # FIX: Validate day_of_week range.
-        # WHY: day_of_week outside 0-6 introduces a feature value the model
-        #      has never seen, leading to unpredictable extrapolation.
-        if not (0 <= int(day_of_week) <= 6):
-            logger.warning("Invalid day_of_week: %s", day_of_week)
-            return
-
-        new_row = [dt.hour, dt.minute, int(day_of_week), actual_duration]
-        self.mock_data.append(new_row)
-        self._train_initial_model()   # retrain + save
+    def learn_from_logs(self, delay_logs):
+        """
+        Retrains the model based on delay logs passed from the frontend.
+        """
+        # Convert dictionary to lists
+        for day_str, delays in delay_logs.items():
+            if not delays:
+                continue
+            day_int = int(day_str)
+            avg_delay = sum(delays) / len(delays)
+            # Add some new mock rows to learn from this delay
+            # base duration ~ 50 mins + delay
+            self.mock_data.append([8, 0, day_int, avg_delay, 50 + avg_delay])
+            self.mock_data.append([9, 0, day_int, avg_delay, 60 + avg_delay])
+        
+        self._train_initial_model()

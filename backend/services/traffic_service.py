@@ -14,10 +14,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 NOMINATIM_BASE = 'https://nominatim.openstreetmap.org'
-OSRM_BASE      = 'https://router.project-osrm.org'
+OSRM_BASE      = 'http://router.project-osrm.org'
 
 # Required by Nominatim TOS: identify your app in User-Agent
-HEADERS = {'User-Agent': 'ClgBuddy-App/1.0 (student commute assistant)'}
+HEADERS = {'User-Agent': 'ClgBuddyApp/1.0'}
 
 # ---------------------------------------------------------------------------
 STATION_COORDS = {
@@ -101,51 +101,22 @@ STATION_COORDS = {
     'Rabale':         [72.9994, 19.1368],
     'Airoli':         [72.9999, 19.1548],
     # KJSCE destination — hardcoded so Nominatim is never called for it
-    'KJSCE':                              [72.9041, 19.0712],
-    'K.J. Somaiya':                       [72.9041, 19.0712],
-    'KJ Somaiya':                         [72.9041, 19.0712],
-    'Somaiya':                            [72.9041, 19.0712],
-    'KJSCE, Vidyavihar West, Mumbai, Maharashtra': [72.9041, 19.0712],
+    'KJSCE':                              [72.9081, 19.0728],
+    'K.J. Somaiya':                       [72.9081, 19.0728],
+    'KJ Somaiya':                         [72.9081, 19.0728],
+    'Somaiya':                            [72.9081, 19.0728],
+    'KJSCE, Vidyavihar West, Mumbai, Maharashtra': [72.9081, 19.0728],
 }
 
 # Fixed walk time: Vidyavihar station exit → KJSCE main gate (measured once)
 VIDYAVIHAR_TO_KJSCE_WALK_MINS = 7
 
+geocache = {}
+
 
 class TrafficService:
     def __init__(self):
         pass  # no keys to initialise
-
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _haversine_km(lon1, lat1, lon2, lat2):
-        """
-        FIX: Haversine straight-line distance between two points.
-        WHY: When OSRM is down we still need *some* estimate. Haversine gives
-             a lower-bound distance; we multiply by 1.4 to approximate road
-             winding and use 25 km/h avg Mumbai speed for duration.
-        """
-        R = 6371  # Earth radius in km
-        dlat = math.radians(lat2 - lat1)
-        dlon = math.radians(lon2 - lon1)
-        a = (math.sin(dlat / 2) ** 2
-             + math.cos(math.radians(lat1))
-             * math.cos(math.radians(lat2))
-             * math.sin(dlon / 2) ** 2)
-        return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-    # ------------------------------------------------------------------
-    # FIX: Wrapped _resolve_coords in an LRU cache (maxsize=128).
-    # WHY: Without this, every tap of "Calculate" re-geocodes the same home
-    #      address via Nominatim HTTP call. The cache avoids ~200 ms latency
-    #      on repeated lookups and respects Nominatim's 1 req/sec rate limit.
-    @staticmethod
-    @lru_cache(maxsize=128)
-    def _resolve_coords_cached(address: str):
-        return TrafficService._resolve_coords_impl(address)
-
-    def _resolve_coords(self, address: str):
-        return self._resolve_coords_cached(address)
 
     @staticmethod
     def _resolve_coords_impl(address: str):
@@ -192,7 +163,16 @@ class TrafficService:
             raise ValueError(f"Could not geocode address: {address}")
         lon = float(results[0]['lon'])
         lat = float(results[0]['lat'])
-        return (lon, lat)   # tuple for lru_cache hashability
+        return (lon, lat)
+
+    def _resolve_coords(self, address: str):
+        global geocache
+        if address in geocache:
+            return geocache[address]
+        
+        coords = self._resolve_coords_impl(address)
+        geocache[address] = coords
+        return coords
 
     # ------------------------------------------------------------------
     def get_travel_time(self, origin: str, destination: str):
@@ -214,12 +194,7 @@ class TrafficService:
             data = resp.json()
 
             if data.get('code') != 'Ok' or not data.get('routes'):
-                # FIX: Fall back to Haversine instead of hard-failing.
-                # WHY: OSRM demo server has no SLA — if it returns no route
-                #      the user gets a blank screen. Haversine gives a rough
-                #      but usable estimate.
-                logger.warning("OSRM returned no route for %s → %s, using Haversine fallback", origin, destination)
-                return self._haversine_fallback(o_coords, d_coords)
+                return {'error': f"OSRM returned no route for {origin} -> {destination}"}
 
             route           = data['routes'][0]
             duration_secs   = route['duration']   # seconds
@@ -241,41 +216,6 @@ class TrafficService:
         except ValueError as e:
             return {'error': str(e)}
         except requests.exceptions.RequestException as e:
-            # FIX: Haversine fallback on network failure.
-            # WHY: OSRM demo server goes down regularly. Without a fallback
-            #      the entire app becomes unusable — single point of failure.
-            logger.warning("OSRM request failed (%s), using Haversine fallback", e)
-            try:
-                o_coords = self._resolve_coords(origin)
-                d_coords = self._resolve_coords(destination)
-                return self._haversine_fallback(o_coords, d_coords)
-            except Exception:
-                return {'error': f"Routing error: {str(e)}"}
+            return {'error': f"Routing error: {str(e)}"}
         except Exception as e:
             return {'error': str(e)}
-
-    # ------------------------------------------------------------------
-    def _haversine_fallback(self, o_coords, d_coords):
-        """
-        FIX: Fallback route estimate using Haversine distance.
-        WHY: Gives users *something* when OSRM is down. Uses 1.4× road
-             winding factor and 25 km/h avg Mumbai city speed.
-        """
-        straight_km = self._haversine_km(
-            o_coords[0], o_coords[1], d_coords[0], d_coords[1]
-        )
-        road_km = round(straight_km * 1.4, 1)   # winding factor
-        duration_mins = max(1, int(road_km / 25 * 60))  # 25 km/h avg
-        duration_secs = duration_mins * 60
-
-        duration_text = (
-            f"~{duration_mins} mins (est)" if duration_mins < 60
-            else f"~{duration_mins // 60}h {duration_mins % 60}m (est)"
-        )
-
-        return {
-            'duration_seconds': duration_secs,
-            'duration_text':    duration_text,
-            'distance_text':    f"~{road_km} km (est)",
-            'fallback':         True,   # flag so caller knows this is approximate
-        }

@@ -92,26 +92,42 @@ def predict_commute():
     data = request.json or {}
     time_str = data.get('time')           # "HH:MM"
     day = data.get('day_of_week')         # 0=Mon … 6=Sun
+    historical_avg = data.get('historical_avg_delay', 0)
 
     if not time_str or day is None:
         return jsonify({'error': 'time and day_of_week are required'}), 400
 
     try:
         dt = datetime.strptime(time_str, '%H:%M')
-        # FIX: Validate day_of_week is in [0, 6].
-        # WHY: Passing day_of_week=99 sends a feature value the model has
-        #      never seen during training → garbage prediction. ML models
-        #      don't raise errors on out-of-range inputs, they just silently
-        #      return nonsense.
         day_int = int(day)
         if not (0 <= day_int <= 6):
             return jsonify({'error': 'day_of_week must be 0 (Mon) to 6 (Sun)'}), 400
-        prediction = ml_service.predict_commute_time(dt.hour, dt.minute, day_int)
+        
+        prediction = ml_service.predict_commute_time(dt.hour, dt.minute, day_int, float(historical_avg))
         return jsonify({'predicted_duration_mins': prediction}), 200
     except ValueError:
         return jsonify({'error': 'time must be HH:MM format'}), 400
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# ML Update
+# ---------------------------------------------------------------------------
+@app.route('/api/ml/update', methods=['POST'])
+def update_ml_model():
+    data = request.json or {}
+    delay_logs = data.get('logs') # e.g. {"0": [10, 5], "1": [2]}
+    
+    if delay_logs is None:
+        return jsonify({'error': 'logs are required'}), 400
+
+    try:
+        ml_service.learn_from_logs(delay_logs)
+        return jsonify({'status': 'model updated'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 
 # ---------------------------------------------------------------------------

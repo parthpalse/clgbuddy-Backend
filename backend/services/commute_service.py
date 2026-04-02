@@ -111,13 +111,8 @@ class CommuteService:
         # ── Road-only route ──────────────────────────────────────────
         road_trip = self.traffic.get_travel_time(origin, self.DESTINATION)
         if 'error' in road_trip:
-            logger.warning("Road-only OSRM failed, using 30-min estimate: %s", road_trip['error'])
-            road_trip = {
-                'duration_seconds': 1800,
-                'duration_text': '~30 mins (est)',
-                'distance_text': 'est',
-                'fallback': True
-            }
+            raise Exception(f"Road routing failed: {road_trip['error']}")
+            
         road_mins       = road_trip['duration_seconds'] / 60
         road_depart_dt  = arrival_dt - timedelta(minutes=road_mins)
 
@@ -139,18 +134,10 @@ class CommuteService:
             leg1 = self.traffic.get_travel_time(
                 origin, f"{origin_station} Railway Station, Mumbai"
             )
-            # FIX: Log a warning when leg1 road lookup fails.
-            # WHY: Silently defaulting to 15 mins is a reasonable fallback,
-            #      but without a log you'd never know the geocoding or OSRM
-            #      call failed — makes debugging production issues very hard.
             if 'error' in leg1:
-                logger.warning(
-                    "Leg1 road lookup failed for '%s' → '%s Station': %s. "
-                    "Defaulting to 15 mins.",
-                    origin, origin_station, leg1['error']
-                )
-            leg1_mins = (leg1['duration_seconds'] / 60
-                         if 'error' not in leg1 else 15)
+                raise Exception(f"Leg1 road routing failed: {leg1['error']}")
+            
+            leg1_mins = leg1['duration_seconds'] / 60
 
             leg3_mins = VIDYAVIHAR_TO_KJSCE_WALK_MINS  # fixed walk: Vidyavihar stn → KJSCE gate
 
