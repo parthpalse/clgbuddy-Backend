@@ -47,6 +47,23 @@ def get_traffic():
 
 
 # ---------------------------------------------------------------------------
+# Nearest Station
+# ---------------------------------------------------------------------------
+@app.route('/api/nearest-station', methods=['POST'])
+def nearest_station():
+    data = request.json or {}
+    lat = data.get('lat')
+    lng = data.get('lng')
+    if lat is None or lng is None:
+        return jsonify({'error': 'lat and lng are required'}), 400
+    try:
+        result = traffic_service.get_nearest_station(float(lat), float(lng))
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
 # Commute plan
 # Accepts: origin, arrival_time (HH:MM), delay_buffer_mins (optional int)
 # Destination is always hardcoded to KJSCE Vidyavihar on the backend.

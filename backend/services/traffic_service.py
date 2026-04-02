@@ -119,6 +119,51 @@ class TrafficService:
         pass  # no keys to initialise
 
     @staticmethod
+    def _haversine_km(lon1, lat1, lon2, lat2):
+        R = 6371  # Earth radius in km
+        dlat = math.radians(lat2 - lat1)
+        dlon = math.radians(lon2 - lon1)
+        a = (math.sin(dlat / 2) ** 2
+             + math.cos(math.radians(lat1))
+             * math.cos(math.radians(lat2))
+             * math.sin(dlon / 2) ** 2)
+        return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    def get_nearest_station(self, lat: float, lng: float) -> dict:
+        min_dist = float('inf')
+        nearest_station = "Unknown"
+        
+        for st_name, coords in STATION_COORDS.items():
+            st_lon = coords[0]
+            st_lat = coords[1]
+            dist = self._haversine_km(lng, lat, st_lon, st_lat)
+            if dist < min_dist:
+                min_dist = dist
+                nearest_station = st_name
+                
+        display_name = "Your Location"
+        url = f"{NOMINATIM_BASE}/reverse"
+        params = {
+            'lat': lat,
+            'lon': lng,
+            'format': 'json'
+        }
+        try:
+            resp = requests.get(url, params=params, headers=HEADERS, timeout=10)
+            if resp.ok:
+                data = resp.json()
+                if data and 'display_name' in data:
+                    display_name = data['display_name']
+        except Exception as e:
+            logger.warning("Reverse geocode failed: %s", e)
+            
+        return {
+            'station': nearest_station,
+            'address': display_name,
+            'distance_km': round(min_dist, 2)
+        }
+
+    @staticmethod
     def _resolve_coords_impl(address: str):
         """
         Return (lng, lat) tuple for an address.

@@ -7,44 +7,37 @@ class TrainService:
     def __init__(self):
         # Offsets in minutes relative to Thane (Positive = before Thane, Negative = after Thane)
         self.offsets_to_thane = {
-            'Kalyan': 25,
-            'Thakurli': 20,
-            'Dombivli': 13,
-            'Kopar': 10,
-            'Diva': 8,
-            'Mumbra': 5,
-            'Kalwa': 3,
-            'Thane': 0,
-            'Mulund': -4,
-            'Nahur': -7,
-            'Bhandup': -10,
-            'Kanjurmarg': -12,
-            'Vikhroli': -15,
-            'Ghatkopar': -18,
-            'Vidyavihar': -22,
-            'Kurla': -25,
-            'Sion': -28,
-            'Dadar': -34,
-            'CSMT': -45
+            'Kalyan': 35, 'Thakurli': 28, 'Dombivli': 22, 'Kopar': 18, 'Diva': 14, 'Mumbra': 10,
+            'Kalwa': 5, 'Thane': 0, 'Mulund': -5, 'Nahur': -8, 'Bhandup': -11, 'Kanjurmarg': -14,
+            'Vikhroli': -17, 'Ghatkopar': -18, 'Vidyavihar': -22, 'Kurla': -25, 'Sion': -28,
+            'Dadar': -34, 'CSMT': -45
         }
         
-        self.thane_schedule = self._generate_thane_vidyavihar_schedule()
-
-    def _generate_thane_vidyavihar_schedule(self):
-        # Hardcode realistic slow local timetable for Thane -> Vidyavihar (every ~15-20 mins)
-        schedule = []
-        base = datetime(2000, 1, 1, 6, 0)
-        end = datetime(2000, 1, 1, 10, 0)
+        self.trans_harbour = {
+            'Ghansoli', 'Airoli', 'Rabale', 'Koparkhairane', 'Turbhe', 'Vashi', 
+            'Sanpada', 'Nerul', 'Belapur', 'Panvel'
+        }
         
-        current = base
+        self.thane_schedule = self._generate_thane_schedule()
+
+    def _generate_thane_schedule(self):
+        # Anchor: Thane departure, 07:15 to 11:00
+        schedule = []
+        base_date = datetime(2000, 1, 1)
+        current = base_date.replace(hour=7, minute=15)
+        end = base_date.replace(hour=11, minute=0)
+        
         while current <= end:
-            v_arr = current + timedelta(minutes=22) # Thane to Vidyavihar takes ~22 mins for Slow Local
+            v_arr = current + timedelta(minutes=22)
             schedule.append({
                 'departure_thane': current.strftime('%H:%M'),
                 'arrival_vidyavihar': v_arr.strftime('%H:%M'),
                 'type': 'Slow'
             })
-            current += timedelta(minutes=15) # Roughly 15 mins gap
+            if current.time() < datetime(2000, 1, 1, 9, 30).time():
+                current += timedelta(minutes=10)
+            else:
+                current += timedelta(minutes=15)
         return schedule
 
     def get_next_trains(self, source: str, destination: str, after_time_str: str = None, limit: int = 50):
@@ -53,33 +46,56 @@ class TrainService:
         else:
             query_time = datetime.now().time()
             
-        source_offset = self.offsets_to_thane.get(source, 0) # Defaults to 0 if not found
-        destination_offset = self.offsets_to_thane.get(destination, -22) # Vidyavihar is -22 from Thane
+        s_offset = self.offsets_to_thane.get(source, 0)
+        d_offset = self.offsets_to_thane.get(destination, -22)
+        
+        interchange = 7 if source in self.trans_harbour else None
         
         results = []
-        for t in self.thane_schedule:
-            thane_dept_t = datetime.strptime(t['departure_thane'], '%H:%M')
-            thane_dept_dt = datetime.combine(datetime.today(), thane_dept_t.time())
-            
-            # If user is at a station before Thane, they leave earlier. 
-            # E.g. Kalyan (+25 mins to Thane), so they depart 25 mins before the Thane departure time
-            source_dept_dt = thane_dept_dt - timedelta(minutes=source_offset)
-            
-            # Arrival time at destination (which should be Vidyavihar)
-            thane_arr_dt = datetime.combine(datetime.today(), datetime.strptime(t['arrival_vidyavihar'], '%H:%M').time())
-            # For correctness if destination is NOT Vidyavihar, though the prompt implies it always is
-            # Vidyavihar offset is -22, so (destination_offset - (-22)) adjusts it
-            arr_dt = thane_arr_dt + timedelta(minutes=-(destination_offset - (-22)))
+        
+        # User is NORTH of Vidyavihar (e.g. Thane=0 > Vidyavihar=-22), needs CSMT-bound train
+        if s_offset > d_offset:
+            for t in self.thane_schedule:
+                thane_dept_t = datetime.strptime(t['departure_thane'], '%H:%M')
+                thane_dept_dt = datetime.combine(datetime.today(), thane_dept_t.time())
+                
+                source_dept_dt = thane_dept_dt - timedelta(minutes=s_offset)
+                arr_dt = datetime.combine(datetime.today(), datetime.strptime(t['arrival_vidyavihar'], '%H:%M').time())
 
-            if source_dept_dt.time() >= query_time:
-                duration = int((arr_dt - source_dept_dt).total_seconds() / 60)
-                results.append({
-                    'train_id': "S" + t['departure_thane'].replace(':', ''),
-                    'type': t['type'],
-                    'departure': source_dept_dt.strftime('%H:%M'),
-                    'arrival': arr_dt.strftime('%H:%M'),
-                    'duration_mins': duration
-                })
+                if source_dept_dt.time() >= query_time:
+                    duration = int((arr_dt - source_dept_dt).total_seconds() / 60)
+                    item = {
+                        'train_id': "S" + t['departure_thane'].replace(':', ''),
+                        'type': t['type'],
+                        'departure': source_dept_dt.strftime('%H:%M'),
+                        'arrival': arr_dt.strftime('%H:%M'),
+                        'duration_mins': duration
+                    }
+                    if interchange is not None:
+                        item['interchange_buffer_mins'] = interchange
+                    results.append(item)
+                    
+        # User is SOUTH of Vidyavihar (e.g. Kurla=-25 < Vidyavihar=-22), needs KALYAN-BOUND (northbound)
+        elif s_offset < d_offset:
+            for t in self.thane_schedule:
+                arr_vid = datetime.combine(datetime.today(), datetime.strptime(t['arrival_vidyavihar'], '%H:%M').time())
+                
+                # source_departure = vidyavihar_arrival_time - (source_offset - (-22)) minutes
+                travel_time = s_offset - d_offset
+                source_dept_dt = arr_vid - timedelta(minutes=travel_time)
+                
+                if source_dept_dt.time() >= query_time:
+                    duration_mins = int((arr_vid - source_dept_dt).total_seconds() / 60)
+                    item = {
+                        'train_id': "N" + t['arrival_vidyavihar'].replace(':', ''),
+                        'type': t['type'],
+                        'departure': source_dept_dt.strftime('%H:%M'),
+                        'arrival': t['arrival_vidyavihar'],
+                        'duration_mins': duration_mins
+                    }
+                    if interchange is not None:
+                        item['interchange_buffer_mins'] = interchange
+                    results.append(item)
                 
         return results
 
