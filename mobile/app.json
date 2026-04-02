@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "ClgBuddy",
-    "slug": "niklo-app",
+    "slug": "clgbuddy",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -27,8 +27,9 @@
     },
     "extra": {
       "eas": {
-        "projectId": "05125689-8db8-40a1-88c5-e092cd1580c4"
+        "projectId": "687b8148-9be7-46fc-917f-33c38013e237"
       }
-    }
+    },
+    "owner": "parth_palse"
   }
 }
