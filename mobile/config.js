@@ -1,1 +1,1 @@
-export const API_URL = 'https://niklo-backend.onrender.com';
+export const API_URL = 'https://clgbuddy-backend.onrender.com';
