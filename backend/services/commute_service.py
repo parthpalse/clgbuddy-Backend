@@ -28,7 +28,7 @@ class CommuteService:
     DEST_STATION  = Config.KJSCE_STATION   # "Vidyavihar"
 
     # Vidyavihar station address used for OSRM leg3 origin
-    VV_STATION_ADDRESS = "Vidyavihar Railway Station, Vidyavihar West, Mumbai, Maharashtra, India"
+    VV_STATION_ADDRESS = "Vidyavihar"
 
     # Keyword → nearest Central Line station (used by _nearest_station)
     STATION_MAP = {
@@ -159,7 +159,7 @@ class CommuteService:
         if origin_station and origin_station != self.DEST_STATION:
             # Leg 1: Home → origin station (real OSRM time)
             leg1_trip = self.traffic.get_travel_time(
-                origin, f"{origin_station} Railway Station, Mumbai"
+                origin, origin_station
             )
             if "error" in leg1_trip:
                 raise Exception(
