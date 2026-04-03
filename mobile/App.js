@@ -51,6 +51,9 @@ function dayOfWeekMon0() {
 
 // ─── Screens ─────────────────────────────────────────────────────────────────
 
+// Nominatim reverse-geocode URL (free, no API key)
+const NOMINATIM_REVERSE = 'https://nominatim.openstreetmap.org/reverse';
+
 /** First-launch setup — collects home address, nearest station, walk time, arrival time. */
 function SetupScreen({ onSave }) {
   const [home, setHome] = useState('');
@@ -60,9 +63,6 @@ function SetupScreen({ onSave }) {
   const [saving, setSaving] = useState(false);
   const [locLoading, setLocLoading] = useState(false);
 
-  const [nearestStationDisplay, setNearestStationDisplay] = useState('');
-  const [showManualAddress, setShowManualAddress] = useState(false);
-
   const ARRIVAL_OPTS = [
     { label: '9:00 AM', val: '09:00' },
     { label: '9:30 AM', val: '09:30' },
@@ -71,42 +71,83 @@ function SetupScreen({ onSave }) {
     { label: '11:00 AM', val: '11:00' },
   ];
 
-  useEffect(() => {
-    async function initLoc() {
-      try {
-        let { status } = await Location.requestForegroundPermissionsAsync({ accuracy: Location.Accuracy.Balanced });
-        if (status !== 'granted') {
-          setShowManualAddress(true);
-          return;
-        }
-        
-        let loc = await Location.getCurrentPositionAsync({});
-        let { latitude, longitude } = loc.coords;
-        
-        let resp = await fetch(`${API_URL}/api/nearest-station`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ lat: latitude, lng: longitude })
-        });
-        
-        if (resp.ok) {
-          let data = await resp.json();
-          if (data && data.address) {
-            setHome(data.address);
-            setNearestStationDisplay(data.station || 'Unknown');
-            setStation(data.station || 'Thane');
-          } else {
-            setShowManualAddress(true);
-          }
-        } else {
-            setShowManualAddress(true);
-        }
-      } catch (e) {
-        setShowManualAddress(true);
+  /**
+   * "📍 Use My Location" handler.
+   * 1. Requests expo-location foreground permission.
+   * 2. Gets current GPS coords.
+   * 3. Reverse-geocodes via Nominatim (free, no API key) to get a human address.
+   * 4. Auto-fills the Home Address field.
+   * Shows a spinner while in progress.
+   * Shows a helpful Alert if permission is denied.
+   */
+  const useMyLocation = async () => {
+    setLocLoading(true);
+    try {
+      // Step 1: Request permission
+      const { status } = await Location.requestForegroundPermissionsAsync();
+
+      if (status !== 'granted') {
+        Alert.alert(
+          '📍 Location Permission Denied',
+          'ClgBuddy needs your location to auto-fill your home address.\n\n'
+          + 'To enable it:\n'
+          + '1. Open your phone Settings\n'
+          + '2. Find ClgBuddy (or Expo Go)\n'
+          + '3. Tap Permissions → Location → Allow\n\n'
+          + 'Or just type your address manually below.',
+          [{ text: 'OK' }]
+        );
+        return;
       }
+
+      // Step 2: Get GPS coordinates
+      const loc = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      const { latitude, longitude } = loc.coords;
+
+      // Step 3: Reverse-geocode via Nominatim (free, no API key needed)
+      const nomUrl =
+        `${NOMINATIM_REVERSE}?lat=${latitude}&lon=${longitude}`
+        + `&format=json&addressdetails=1`;
+      const resp = await fetch(nomUrl, {
+        headers: { 'User-Agent': 'ClgBuddyApp/1.0 (student project)' },
+      });
+
+      if (!resp.ok) {
+        throw new Error(`Nominatim returned HTTP ${resp.status}`);
+      }
+
+      const data = await resp.json();
+
+      // Build a concise address from structured address components
+      const addr = data.address || {};
+      const parts = [
+        addr.road || addr.pedestrian || addr.footway,
+        addr.suburb || addr.neighbourhood || addr.quarter,
+        addr.city || addr.town || addr.village || addr.county,
+        addr.state,
+      ].filter(Boolean);
+
+      const displayAddr =
+        parts.length > 0 ? parts.join(', ') : (data.display_name || '');
+
+      if (!displayAddr) {
+        throw new Error('No address returned from Nominatim');
+      }
+
+      // Step 4: Auto-fill the home address field
+      setHome(displayAddr);
+    } catch (err) {
+      Alert.alert(
+        'Location Error',
+        `Could not determine your location: ${err.message}\n\nPlease type your address manually.`,
+        [{ text: 'OK' }]
+      );
+    } finally {
+      setLocLoading(false);
     }
-    initLoc();
-  }, []);
+  };
 
   const save = async () => {
     if (!home.trim() || !station.trim() || !arrival.trim()) {
@@ -118,7 +159,12 @@ function SetupScreen({ onSave }) {
       return;
     }
     setSaving(true);
-    const profile = { home: home.trim(), station: station.trim(), walk_mins: parseInt(walkMins) || 5, arrival_time: arrival.trim() };
+    const profile = {
+      home: home.trim(),
+      station: station.trim(),
+      walk_mins: parseInt(walkMins) || 5,
+      arrival_time: arrival.trim(),
+    };
     await AsyncStorage.setItem(KEY_PROFILE, JSON.stringify(profile));
     onSave(profile);
   };
@@ -131,37 +177,59 @@ function SetupScreen({ onSave }) {
 
         <View style={styles.card}>
           <Text style={styles.label}>🏠 Home Address</Text>
-          {(!showManualAddress && nearestStationDisplay) ? (
-            <View style={styles.autoLocationBox}>
-              <Text style={styles.autoFilledAddr}>{home}</Text>
-              <Text style={styles.nearestChip}>📍 Nearest station: {nearestStationDisplay}</Text>
-              <TouchableOpacity onPress={() => setShowManualAddress(true)}>
-                <Text style={styles.editManuallyLink}>✏️ Edit manually</Text>
-              </TouchableOpacity>
-            </View>
-          ) : (
-             <TextInput style={styles.input} value={home} onChangeText={setHome}
-                placeholder="e.g. Thane West, near Upvan Lake" />
-          )}
+
+          {/* 📍 Use My Location button */}
+          <TouchableOpacity
+            style={[styles.locButton, locLoading && styles.locButtonDisabled]}
+            onPress={useMyLocation}
+            disabled={locLoading}
+          >
+            {locLoading ? (
+              <View style={styles.locButtonInner}>
+                <ActivityIndicator color="#007AFF" size="small" />
+                <Text style={styles.locButtonText}>  Fetching location…</Text>
+              </View>
+            ) : (
+              <Text style={styles.locButtonText}>📍 Use My Location</Text>
+            )}
+          </TouchableOpacity>
+
+          <TextInput
+            style={styles.input}
+            value={home}
+            onChangeText={setHome}
+            placeholder="e.g. Thane West, near Upvan Lake"
+          />
 
           <Text style={styles.label}>🚉 Nearest Railway Station</Text>
-          <TextInput style={styles.input} value={station} onChangeText={setStation}
-            placeholder="e.g. Thane" />
+          <TextInput
+            style={styles.input}
+            value={station}
+            onChangeText={setStation}
+            placeholder="e.g. Thane"
+          />
 
           <Text style={styles.label}>🚶 Walk time: Station → KJSCE gate (mins)</Text>
-          <TextInput style={styles.input} value={walkMins} onChangeText={setWalkMins}
-            placeholder="5" keyboardType="number-pad" />
+          <TextInput
+            style={styles.input}
+            value={walkMins}
+            onChangeText={setWalkMins}
+            placeholder="5"
+            keyboardType="number-pad"
+          />
 
           <Text style={styles.label}>🎯 Desired arrival time at KJSCE</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.pillContainer}>
             {ARRIVAL_OPTS.map((opt) => (
-               <TouchableOpacity 
-                  key={opt.val} 
-                  style={[styles.pill, arrival === opt.val && styles.pillActive]}
-                  onPress={() => setArrival(opt.val)}
-               >
-                 <Text style={[styles.pillText, arrival === opt.val && styles.pillTextActive]}>{opt.label}</Text>
-               </TouchableOpacity>
+              <TouchableOpacity
+                key={opt.val}
+                style={[styles.pill, arrival === opt.val && styles.pillActive]}
+                onPress={() => setArrival(opt.val)}
+              >
+                <Text style={[styles.pillText, arrival === opt.val && styles.pillTextActive]}>
+                  {opt.label}
+                </Text>
+              </TouchableOpacity>
             ))}
           </ScrollView>
 
@@ -464,12 +532,34 @@ const styles = StyleSheet.create({
   logButton: { backgroundColor: '#34C759', borderRadius: 10, paddingHorizontal: 18, paddingVertical: 13 },
   logButtonText: { color: '#fff', fontWeight: '700', fontSize: 15 },
   delayHistory: { fontSize: 12, color: '#888', marginTop: 8, textAlign: 'center' },
-  
-  autoLocationBox: { backgroundColor: '#F8F9FA', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: '#E9ECEF', marginBottom: 4 },
-  autoFilledAddr: { fontSize: 14, color: '#333', fontWeight: '500', marginBottom: 6 },
-  nearestChip: { fontSize: 12, color: '#007AFF', backgroundColor: '#E8F5FF', paddingVertical: 4, paddingHorizontal: 8, borderRadius: 8, overflow: 'hidden', alignSelf: 'flex-start', marginBottom: 8, fontWeight: '600' },
-  editManuallyLink: { fontSize: 13, color: '#666', textDecorationLine: 'underline' },
-  
+
+  // 📍 Use My Location button
+  locButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: '#007AFF',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginBottom: 10,
+    backgroundColor: '#F0F8FF',
+  },
+  locButtonDisabled: {
+    borderColor: '#A0BFDF',
+    backgroundColor: '#F5F9FF',
+  },
+  locButtonInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  locButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#007AFF',
+  },
+
   pillContainer: { flexDirection: 'row', marginBottom: 6 },
   pill: { backgroundColor: '#F0F4F8', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, marginRight: 8, borderWidth: 1, borderColor: '#DDE3EA' },
   pillActive: { backgroundColor: '#007AFF', borderColor: '#007AFF' },
